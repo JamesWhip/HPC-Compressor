@@ -10,7 +10,8 @@
     #include <arm_neon.h>   // NEON for ARM64
 #endif
 
-#define NUM_THREADS 20
+#define NUM_THREADS 10
+#define BLOCK_SIZE 32 // Cant change yet, not working
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
@@ -28,7 +29,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         int start = thread_id * chunk_size;
         int end = start + chunk_size;
         if(end > nbEle) end = nbEle;
-        int block_num = (chunk_size+31)/32;
+        int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
         int start_block = thread_id * block_num;
         int block_start, block_end;
         const float recip_precision = 0.5f/errorBound;
@@ -39,8 +40,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
-            block_start = start + i * 32;
-            block_end = (block_start+32) > end ? end : block_start+32;
+            block_start = start + i * BLOCK_SIZE;
+            block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
             float data_recip;
             int s;
             int curr_quant, max_quant=0;
@@ -48,6 +49,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             unsigned int sign_flag = 0;
             int temp_fixed_rate;
             
+            int previous_quant = 0;
+            int quant_diff = 0;
             // Prequantization, get absolute value for each data.
             for(int j=block_start; j<block_end; j++)
             {
@@ -55,12 +58,16 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 data_recip = oriData[j] * recip_precision;
                 s = data_recip >= -0.5f ? 0 : 1;
                 curr_quant = (int)(data_recip + 0.5f) - s;
+
+                quant_diff = curr_quant - previous_quant;
+                previous_quant = curr_quant;
+
                 // Get sign data.
-                sign_ofs = j % 32;
-                sign_flag |= (curr_quant < 0) << (31 - sign_ofs);
+                sign_ofs = j % BLOCK_SIZE;
+                sign_flag |= (quant_diff < 0) << (BLOCK_SIZE-1 - sign_ofs);
                 // Get absolute quantization code.
-                max_quant = max_quant > abs(curr_quant) ? max_quant : abs(curr_quant);
-                absQuant[j] = abs(curr_quant);
+                max_quant = max_quant > abs(quant_diff) ? max_quant : abs(quant_diff);
+                absQuant[j] = abs(quant_diff);
             }
 
             // Record fixed-length encoding rate for each block.
@@ -70,7 +77,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             cmpData[curr_block] = (unsigned char)temp_fixed_rate;
 
             // Inner thread prefix-sum.
-            thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
+            thread_ofs += temp_fixed_rate ? (BLOCK_SIZE+temp_fixed_rate*BLOCK_SIZE)/8 : 0;
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
@@ -86,8 +93,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
-            block_start = start + i * 32;
-            block_end = (block_start+32) > end ? end : block_start+32;
+            block_start = start + i * BLOCK_SIZE;
+            block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = signFlag[curr_block];
@@ -111,22 +118,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                     tmp_char1 = 0;
                     tmp_char2 = 0;
                     tmp_char3 = 0;
-
-                    
-                    // Get ith bit in 0~7 quant, and store to tmp_char0.
-                    /*
-                    for(int k=block_start; k<block_start+8; k++)
-                        tmp_char0 |= (((absQuant[k] & mask) >> j) << (7+block_start-k));
-                    // Get ith bit in 8~15 quant, and store to tmp_char1.
-                    for(int k=block_start+8; k<block_start+16; k++)
-                        tmp_char1 |= (((absQuant[k] & mask) >> j) << (15+block_start-k));
-                    // Get ith bit in 16~23 quant, and store to tmp_char2.
-                    for(int k=block_start+16; k<block_start+24; k++)
-                        tmp_char2 |= (((absQuant[k] & mask) >> j) << (23+block_start-k));
-                    // Get ith bit in 24~31 quant, and store to tmp_char3.
-                    for(int k=block_start+24; k<block_end; k++)
-                        tmp_char3 |= (((absQuant[k] & mask) >> j) << (31+block_start-k));
-                    */
 
                     for(int k=block_start; k<block_start+8; k++){
                         tmp_char0 |= (((absQuant[k] & mask) >> j) << (7+block_start-k));
@@ -172,7 +163,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int start = thread_id * chunk_size;
         int end = start + chunk_size;
         if(end > nbEle) end = nbEle;
-        int block_num = (chunk_size+31)/32;
+        int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
         int block_start, block_end;
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
@@ -180,7 +171,6 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
 
         // Iterate all blocks in current thread.
         // Unwrap by 5, block size is 33750
-        //printf("%i, %i\n", start_block, block_num);
         for(int i=start_block; i<block_num + start_block; i += 5)
         {
             // Retrieve fixed-rate for each block in the compressed data.
@@ -196,11 +186,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             fixedRate[i+3] = temp_fixed_rate3;
             fixedRate[i+4] = temp_fixed_rate4;
 
-            int sum0 = temp_fixed_rate0 ? (32+temp_fixed_rate0*32)/8 : 0;
-            int sum1 = temp_fixed_rate1 ? (32+temp_fixed_rate1*32)/8 : 0;
-            int sum2 = temp_fixed_rate2 ? (32+temp_fixed_rate2*32)/8 : 0;
-            int sum3 = temp_fixed_rate3 ? (32+temp_fixed_rate3*32)/8 : 0;
-            int sum4 = temp_fixed_rate4 ? (32+temp_fixed_rate4*32)/8 : 0;
+            int sum0 = temp_fixed_rate0 ? (BLOCK_SIZE+temp_fixed_rate0*BLOCK_SIZE)/8 : 0;
+            int sum1 = temp_fixed_rate1 ? (BLOCK_SIZE+temp_fixed_rate1*BLOCK_SIZE)/8 : 0;
+            int sum2 = temp_fixed_rate2 ? (BLOCK_SIZE+temp_fixed_rate2*BLOCK_SIZE)/8 : 0;
+            int sum3 = temp_fixed_rate3 ? (BLOCK_SIZE+temp_fixed_rate3*BLOCK_SIZE)/8 : 0;
+            int sum4 = temp_fixed_rate4 ? (BLOCK_SIZE+temp_fixed_rate4*BLOCK_SIZE)/8 : 0;
 
             thread_ofs += sum0 + sum1 + sum2 + sum3 + sum4;
             // Inner thread prefix-sum.
@@ -226,8 +216,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
-            block_start = start + i * 32;
-            block_end = (block_start+32) > end ? end : block_start+32;
+            block_start = start + i * BLOCK_SIZE;
+            block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = 0;
@@ -253,24 +243,6 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     tmp_char3 = cmpData[cmp_byte_ofs+3];
                     cmp_byte_ofs += 4;
 
-                    /*
-                    // Get ith bit in 0~7 abs quant from global memory.
-                    for(int k=block_start; k<block_start+8; k++)
-                        absQuant[k] |= ((tmp_char0 >> (7+block_start-k)) & 0x00000001) << j;
-
-                    // Get ith bit in 8~15 abs quant from global memory.
-                    for(int k=block_start+8; k<block_start+16; k++)
-                        absQuant[k] |= ((tmp_char1 >> (15+block_start-k)) & 0x00000001) << j;
-
-                    // Get ith bit in 16-23 abs quant from global memory.
-                    for(int k=block_start+16; k<block_start+24; k++)
-                        absQuant[k] |= ((tmp_char2 >> (23+block_start-k)) & 0x00000001) << j;
-
-                    // Get ith bit in 24-31 abs quant from global memory.
-                    for(int k=block_start+24; k<block_end; k++)
-                        absQuant[k] |= ((tmp_char3 >> (31+block_start-k)) & 0x00000001) << j;
-                    */
-                    
                     for(int k=block_start; k<block_start+8; k++){
                         absQuant[k] |= ((tmp_char0 >> (7+block_start-k)) & 0x00000001) << j;
                         absQuant[k+8] |= ((tmp_char1 >> (7+block_start-k)) & 0x00000001) << j;
@@ -281,6 +253,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
 
                 // De-quantize and store data back to decompression data.
                 // Unwrap by 4, block of 32
+                int previous_quant = 0;
+                int curr_quant0, curr_quant1, curr_quant2, curr_quant3;
                 for(int i=block_start; i<block_end; i += 4)
                 {
                     /*sign_ofs = i % 32;
@@ -289,10 +263,15 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     else
                         currQuant = absQuant[i];
                     */
-                    decData[i  ] = absQuant[i  ] * (sign_flag & (1 << (31 - (i)   % 32)) ? -1 : 1) * errorBound * 2;
-                    decData[i+1] = absQuant[i+1] * (sign_flag & (1 << (31 - (i+1) % 32)) ? -1 : 1) * errorBound * 2;
-                    decData[i+2] = absQuant[i+2] * (sign_flag & (1 << (31 - (i+2) % 32)) ? -1 : 1) * errorBound * 2;
-                    decData[i+3] = absQuant[i+3] * (sign_flag & (1 << (31 - (i+3) % 32)) ? -1 : 1) * errorBound * 2;
+                    curr_quant0 = absQuant[i  ] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
+                    decData[i  ] = (curr_quant0) * errorBound * 2;
+                    curr_quant1 = absQuant[i+1] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+1)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant0;
+                    decData[i+1] = (curr_quant1) * errorBound * 2;
+                    curr_quant2 = absQuant[i+2] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+2)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant1;
+                    decData[i+2] = (curr_quant2) * errorBound * 2;
+                    curr_quant3 = absQuant[i+3] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+3)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant2;
+                    decData[i+3] = (curr_quant3) * errorBound * 2;
+                    previous_quant = curr_quant3;
                 }
             }
         }
