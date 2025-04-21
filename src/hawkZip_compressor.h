@@ -66,7 +66,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 sign_ofs = j % BLOCK_SIZE;
                 sign_flag |= (quant_diff < 0) << (BLOCK_SIZE-1 - sign_ofs);
                 // Get absolute quantization code.
-                max_quant = max_quant > abs(quant_diff) ? max_quant : abs(quant_diff);
+                //if (j != block_start)
+                    max_quant = max_quant > abs(quant_diff) ? max_quant : abs(quant_diff);
                 absQuant[j] = abs(quant_diff);
             }
 
@@ -253,9 +254,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
 
                 // De-quantize and store data back to decompression data.
                 // Unwrap by 4, block of 32
-                int previous_quant = 0;
+                
                 int curr_quant0, curr_quant1, curr_quant2, curr_quant3;
-                for(int i=block_start; i<block_end; i += 4)
+
+                curr_quant0 = absQuant[block_start] * (sign_flag & (1 << (BLOCK_SIZE-1 - (block_start)   % BLOCK_SIZE)) ? -1 : 1);
+                decData[block_start] = curr_quant0 * errorBound * 2;
+                int previous_quant = curr_quant0;//absQuant[block_start];
+                for(int i=block_start+1; i<block_end; i += 1)
                 {
                     /*sign_ofs = i % 32;
                     if(sign_flag & (1 << (31 - i % 32)))
@@ -265,13 +270,14 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     */
                     curr_quant0 = absQuant[i  ] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
                     decData[i  ] = (curr_quant0) * errorBound * 2;
-                    curr_quant1 = absQuant[i+1] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+1)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant0;
-                    decData[i+1] = (curr_quant1) * errorBound * 2;
-                    curr_quant2 = absQuant[i+2] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+2)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant1;
-                    decData[i+2] = (curr_quant2) * errorBound * 2;
-                    curr_quant3 = absQuant[i+3] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+3)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant2;
-                    decData[i+3] = (curr_quant3) * errorBound * 2;
-                    previous_quant = curr_quant3;
+                    previous_quant = curr_quant0;
+                    //curr_quant1 = absQuant[i+1] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+1)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant0;
+                    //decData[i+1] = (curr_quant1) * errorBound * 2;
+                    //curr_quant2 = absQuant[i+2] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+2)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant1;
+                    //decData[i+2] = (curr_quant2) * errorBound * 2;
+                    //curr_quant3 = absQuant[i+3] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i+3)   % BLOCK_SIZE)) ? -1 : 1) + curr_quant2;
+                    //decData[i+3] = (curr_quant3) * errorBound * 2;
+                    //previous_quant = curr_quant3;
                 }
             }
         }

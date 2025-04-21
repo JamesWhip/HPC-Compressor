@@ -4,9 +4,13 @@
 #include <omp.h>
 #include "hawkZip_compressor.h"
 
+float* original_data;
+
 void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size_t* cmpSize, float errorBound)
 {
-    // Variables used in compression kernel
+    original_data = oriData;
+
+    // Variables used in compression kernel 
     int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     unsigned int* signFlag = (unsigned int*)malloc(sizeof(unsigned int)*blockNum);
@@ -25,10 +29,19 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     // Reallocate memory consumption of cmpData.
     cmpData = (unsigned char*)realloc(cmpData, sizeof(unsigned char)*(*cmpSize));
 
-    free(absQuant);
+    free(absQuant); 
     free(signFlag);
     free(fixedRate);
     free(threadOfs);
+}
+
+float PSNR(float* ori_data, float* dec_data, size_t nbEle){
+    float sum = 0;
+    for(size_t i=0; i<nbEle; i++) {
+        sum += (ori_data[i] - dec_data[i]) * (ori_data[i] - dec_data[i]);
+    }
+    float MSE = sum / nbEle;
+    return 10 * log10f(1/MSE);
 }
 
 void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, float errorBound)
@@ -47,6 +60,8 @@ void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, fl
     hawkZip_decompress_kernel(decData, cmpData, absQuant, fixedRate, threadOfs, nbEle, errorBound);
     timerDEC_end = omp_get_wtime();
     printf("hawkZip decompression throughput: %f GB/s\n", (nbEle*sizeof(float)/1024.0/1024.0/1024.0)/(timerDEC_end-timerDEC_start));
+
+    printf("PSNR: %f", PSNR(original_data, decData, nbEle));
 
     free(absQuant);
     free(fixedRate);
