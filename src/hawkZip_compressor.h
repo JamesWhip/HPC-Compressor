@@ -12,6 +12,7 @@
 
 #define NUM_THREADS 1
 #define BLOCK_SIZE 32 // Cant change yet, not working
+#define START_OFFSET 1
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
@@ -34,7 +35,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
         int block_start, block_end;
         const float recip_precision = 0.5f/errorBound;
         int sign_ofs;
-        unsigned int thread_ofs = 0; 
+        unsigned int thread_ofs = 1; 
         int start_max_quant=0;
 
         // Iterate all blocks in current thread.
@@ -92,33 +93,33 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             signFlag[curr_block] = sign_flag;
             temp_fixed_rate = max_quant==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max_quant);
             fixedRate[curr_block] = temp_fixed_rate;
-            cmpData[curr_block] = (unsigned char)temp_fixed_rate; // Save 1 char of space for startFixedRate
+            cmpData[curr_block+START_OFFSET] = (unsigned char)temp_fixed_rate; // Save 1 char of space for startFixedRate
 
             // Inner thread prefix-sum.
-            thread_ofs += temp_fixed_rate ? (BLOCK_SIZE+32+temp_fixed_rate*BLOCK_SIZE)/8 : 4;  // BLOCKSIZE of sign bits + fixed rate#of bits * num of ints) / 8 for bytes
+            thread_ofs += temp_fixed_rate ? (BLOCK_SIZE+temp_fixed_rate*BLOCK_SIZE)/8 : 0;  // BLOCKSIZE of sign bits + fixed rate#of bits * num of ints) / 8 for bytes
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         
         
-       // startFixedRate[thread_id] = start_max_quant;
+        startFixedRate[thread_id] = start_max_quant;
 
 
         #pragma omp barrier
 
-        /*
+        
         int max = 0;
         for(int i=0; i<NUM_THREADS; i++) {
             max = max > startFixedRate[i] ? max : startFixedRate[i];
         }
 
-        int start_fixed_rate = max==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max);
+        int start_fixed_rate = (max==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max) + 8)/8;
         cmpData[0] = (unsigned char)start_fixed_rate;
-        */
+        
 
         // Exclusive prefix-sum.
 
-        threadOfs[thread_id] = thread_ofs;// + (int)(start_fixed_rate*block_num/8);
+        threadOfs[thread_id] = thread_ofs + start_fixed_rate*block_num;
 
         #pragma omp barrier
 
@@ -127,7 +128,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             global_ofs += threadOfs[i];
         }
 
-        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
+        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET;
 
 
         //for(int i=0; i<)
@@ -153,35 +154,30 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                 cmpData[cmp_byte_ofs++] = 0xff & (sign_flag >> 8);
                 cmpData[cmp_byte_ofs++] = 0xff & sign_flag;
 
+                /*
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 24);
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 16);
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 8);
-                cmpData[cmp_byte_ofs++] = 0xff & relative_start;
+                cmpData[cmp_byte_ofs++] = 0xff & relative_start;*/
 
                 unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
                 int mask = 1;
 
-                /*
+                
                 for (int j=0; j<start_fixed_rate; j++)
                 {
                     // start_fixed rate # bits to store relative start
                     tmp_char0 = 0;
 
-                    if (j == 0){
-                        tmp_char0 = ((relative_start & 0xe0) >> start_fixed_rate) << 7;
-                    }
+                    tmp_char0 = relative_start >> (j*8);
                     
-                    for(int k=0; k<8; k++){
-                        tmp_char0 |= (((relative_start & mask) >> j) << (7-k));
-                    }
-                    mask <<= 1;
                     cmpData[cmp_byte_ofs++] = tmp_char0;
 
                     //cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 24);
                     //cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 16);
                     //cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 8);
                     //cmpData[cmp_byte_ofs++] = 0xff & relative_start;
-                }*/
+                }
 
                 mask = 1;
                 // Retrieve quant data for one block.
@@ -209,12 +205,12 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                     cmp_byte_ofs += 4;
                     mask <<= 1;
                 }
-            } else {
+            } else {/*
                 relative_start = relativeStart[curr_block];
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 24);
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 16);
                 cmpData[cmp_byte_ofs++] = 0xff & (relative_start >> 8);
-                cmpData[cmp_byte_ofs++] = 0xff & relative_start;
+                cmpData[cmp_byte_ofs++] = 0xff & relative_start;*/
             }
         }
 
@@ -236,8 +232,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
     
-    //int start_fixed_rate = (int)cmpData[0];
-    
+    int start_fixed_rate = (int)cmpData[0];
 
     // hawkZip parallel decompression begin.
     #pragma omp parallel
@@ -250,7 +245,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
         int block_start, block_end;
         int start_block = thread_id * block_num;
-        unsigned int thread_ofs = 0;
+        unsigned int thread_ofs = 1;
 
 
         // Iterate all blocks in current thread.
@@ -258,11 +253,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         for(int i=start_block; i<block_num + start_block; i += 5)
         {
             // Retrieve fixed-rate for each block in the compressed data.
-            int temp_fixed_rate0 = (int)cmpData[i];
-            int temp_fixed_rate1 = (int)cmpData[i+1];
-            int temp_fixed_rate2 = (int)cmpData[i+2];
-            int temp_fixed_rate3 = (int)cmpData[i+3];
-            int temp_fixed_rate4 = (int)cmpData[i+4];
+            int temp_fixed_rate0 = (int)cmpData[i+START_OFFSET];
+            int temp_fixed_rate1 = (int)cmpData[i+1+START_OFFSET];
+            int temp_fixed_rate2 = (int)cmpData[i+2+START_OFFSET];
+            int temp_fixed_rate3 = (int)cmpData[i+3+START_OFFSET];
+            int temp_fixed_rate4 = (int)cmpData[i+4+START_OFFSET];
 
             fixedRate[i]   = temp_fixed_rate0;
             fixedRate[i+1] = temp_fixed_rate1;
@@ -270,21 +265,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             fixedRate[i+3] = temp_fixed_rate3;
             fixedRate[i+4] = temp_fixed_rate4;
 
-            int sum0 = temp_fixed_rate0 ? (BLOCK_SIZE+32+temp_fixed_rate0*BLOCK_SIZE)/8 : 4;
-            int sum1 = temp_fixed_rate1 ? (BLOCK_SIZE+32+temp_fixed_rate1*BLOCK_SIZE)/8 : 4;
-            int sum2 = temp_fixed_rate2 ? (BLOCK_SIZE+32+temp_fixed_rate2*BLOCK_SIZE)/8 : 4;
-            int sum3 = temp_fixed_rate3 ? (BLOCK_SIZE+32+temp_fixed_rate3*BLOCK_SIZE)/8 : 4;
-            int sum4 = temp_fixed_rate4 ? (BLOCK_SIZE+32+temp_fixed_rate4*BLOCK_SIZE)/8 : 4;
+            int sum0 = (temp_fixed_rate0 ? (BLOCK_SIZE+temp_fixed_rate0*BLOCK_SIZE)/8 : 0) + start_fixed_rate;
+            int sum1 = (temp_fixed_rate1 ? (BLOCK_SIZE+temp_fixed_rate1*BLOCK_SIZE)/8 : 0) + start_fixed_rate;
+            int sum2 = (temp_fixed_rate2 ? (BLOCK_SIZE+temp_fixed_rate2*BLOCK_SIZE)/8 : 0) + start_fixed_rate;
+            int sum3 = (temp_fixed_rate3 ? (BLOCK_SIZE+temp_fixed_rate3*BLOCK_SIZE)/8 : 0) + start_fixed_rate;
+            int sum4 = (temp_fixed_rate4 ? (BLOCK_SIZE+temp_fixed_rate4*BLOCK_SIZE)/8 : 0) + start_fixed_rate;
 
             thread_ofs += sum0 + sum1 + sum2 + sum3 + sum4;
-            // Inner thread prefix-sum.
-            /*
-            thread_ofs += temp_fixed_rate0 ? (32+temp_fixed_rate0*32)/8 : 0;
-            thread_ofs += temp_fixed_rate1 ? (32+temp_fixed_rate1*32)/8 : 0;
-            thread_ofs += temp_fixed_rate2 ? (32+temp_fixed_rate2*32)/8 : 0;
-            thread_ofs += temp_fixed_rate3 ? (32+temp_fixed_rate3*32)/8 : 0;
-            thread_ofs += temp_fixed_rate4 ? (32+temp_fixed_rate4*32)/8 : 0;
-            */
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
@@ -294,7 +281,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
-        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
+        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET;
 
         // Restore decompressed data.
         for(int i=0; i<block_num; i++)
@@ -316,30 +303,23 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                             (0x00ff0000 & (cmpData[cmp_byte_ofs++] << 16)) |
                             (0x0000ff00 & (cmpData[cmp_byte_ofs++] << 8))  |
                             (0x000000ff & cmpData[cmp_byte_ofs++]);
-                
+                /*
                 relative_start = (0xff000000 & (cmpData[cmp_byte_ofs++] << 24)) |
                             (0x00ff0000 & (cmpData[cmp_byte_ofs++] << 16)) |
                             (0x0000ff00 & (cmpData[cmp_byte_ofs++] << 8))  |
                             (0x000000ff & cmpData[cmp_byte_ofs++]);
 
+                            */
                 unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
                 
-                /*
+                
                 int relative_sign = 0;
-                for(int j=0; j<start_fixed_rate; j++)
+                for(int j=0; j < start_fixed_rate; j++)
                 {
                     tmp_char0 = cmpData[cmp_byte_ofs++];
-
-                    if (j == 0){
-                        relative_sign = (tmp_char0 & 0xe0) >> 7 ? -1 : 1;
-                    }
-
-                    for(int k=0; k<8; k++){
-                        relative_start |= ((tmp_char0 >> (7-k)) & 0x00000001) << j;
-                    }
-                }*/
-
-                //relative_start *= relative_sign;
+                    
+                    relative_start |= (tmp_char0) << (j*8);
+                }
 
                 for(int j=0; j<temp_fixed_rate; j++)
                 {
@@ -383,14 +363,14 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     previous_quant = curr_quant0;
                 }
             } else {
-                relative_start = (0xff000000 & (cmpData[cmp_byte_ofs++] << 24)) |
+                /*relative_start = (0xff000000 & (cmpData[cmp_byte_ofs++] << 24)) |
                     (0x00ff0000 & (cmpData[cmp_byte_ofs++] << 16)) |
                     (0x0000ff00 & (cmpData[cmp_byte_ofs++] << 8))  |
                     (0x000000ff & cmpData[cmp_byte_ofs++]);
                 float const_num = relative_start * errorBound * 2;
                 for(int i=block_start; i<block_end; i++){
                     decData[i] = const_num;
-                }
+                }*/
             }
         }
     }
