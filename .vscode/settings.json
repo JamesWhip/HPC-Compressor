@@ -3,6 +3,7 @@
         "stdio.h": "c",
         "random": "c",
         "limits": "c",
-        "algorithm": "c"
+        "algorithm": "c",
+        "arm_neon.h": "c"
     }
 }
