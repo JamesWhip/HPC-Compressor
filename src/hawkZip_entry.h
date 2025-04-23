@@ -11,17 +11,19 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     original_data = oriData;
 
     // Variables used in compression kernel 
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + BLOCK_SIZE-1) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
+    int* relative_start = (int*)malloc(sizeof(int)*blockNum);
     unsigned int* signFlag = (unsigned int*)malloc(sizeof(unsigned int)*blockNum);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
+    int* startFixedRate = (int*)malloc(sizeof(int)*blockNum);
     unsigned int* threadOfs = (unsigned int*)malloc(sizeof(unsigned int)*NUM_THREADS);
     memset(cmpData, 0, sizeof(float)*nbEle);
     double timerCMP_start, timerCMP_end;
 
     // Compression kernel computation and time measurement.
     timerCMP_start = omp_get_wtime();
-    hawkZip_compress_kernel(oriData, cmpData, absQuant, signFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
+    hawkZip_compress_kernel(oriData, cmpData, relative_start, startFixedRate, absQuant, signFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
     timerCMP_end = omp_get_wtime();
     printf("hawkZip   compression ratio:      %f\n", (float)(sizeof(float)*nbEle) / (float)(sizeof(unsigned char)*(*cmpSize)));
     printf("hawkZip   compression throughput: %f GB/s\n", (nbEle*sizeof(float)/1024.0/1024.0/1024.0)/(timerCMP_end-timerCMP_start));
@@ -33,12 +35,16 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     free(signFlag);
     free(fixedRate);
     free(threadOfs);
+    free(relative_start);
+    free(startFixedRate);
 }
 
 float PSNR(float* ori_data, float* dec_data, size_t nbEle){
     float sum = 0;
     for(size_t i=0; i<nbEle; i++) {
         sum += (ori_data[i] - dec_data[i]) * (ori_data[i] - dec_data[i]);
+        //if (ori_data[i] - dec_data[i] > 0.01 || ori_data[i] - dec_data[i] < -0.01)
+            //printf("%li, %f - %f = %f\n", i, ori_data[i], dec_data[i], ori_data[i] - dec_data[i]);
     }
     float MSE = sum / nbEle;
     return 10 * log10f(1/MSE);
@@ -47,7 +53,7 @@ float PSNR(float* ori_data, float* dec_data, size_t nbEle){
 void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, float errorBound)
 {
     // Varaibles used in decompression kernel
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + BLOCK_SIZE-1) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     memset(absQuant, 0, sizeof(int)*nbEle);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
