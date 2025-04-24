@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <omp.h>
+#include "traverser.h"
+#include "haar_transform.h"
 
 // MODIFICATION Preprocessor for x86 vs ARM processors
 #if defined(__x86_64__) || defined(_M_X64)
@@ -14,7 +16,7 @@
 #define BLOCK_SIZE 32 // Cant change yet, not working, would need to change how signFlag is stored
 #define START_OFFSET 1 // 1 Char of padding at the start for the startFixedRate
 
-void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
+void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, float* haarBlock, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
@@ -194,7 +196,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
     }
 }
 
-void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
+void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* haarBlock, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
 {
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;

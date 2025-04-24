@@ -10,6 +10,9 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
 {
     original_data = oriData;
 
+
+    float* haarBlock = (float*)malloc(sizeof(float)*BLOCK_SIZE);
+
     // Variables used in compression kernel 
     int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + BLOCK_SIZE-1) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
@@ -23,7 +26,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
 
     // Compression kernel computation and time measurement.
     timerCMP_start = omp_get_wtime();
-    hawkZip_compress_kernel(oriData, cmpData, relative_start, startFixedRate, absQuant, signFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
+    hawkZip_compress_kernel(oriData, cmpData, relative_start, startFixedRate, haarBlock, absQuant, signFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
     timerCMP_end = omp_get_wtime();
     printf("hawkZip   compression ratio:      %f\n", (float)(sizeof(float)*nbEle) / (float)(sizeof(unsigned char)*(*cmpSize)));
     printf("hawkZip   compression throughput: %f GB/s\n", (nbEle*sizeof(float)/1024.0/1024.0/1024.0)/(timerCMP_end-timerCMP_start));
@@ -37,6 +40,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     free(threadOfs);
     free(relative_start);
     free(startFixedRate);
+    free(haarBlock);
 }
 
 float PSNR(float* ori_data, float* dec_data, size_t nbEle){
@@ -52,6 +56,10 @@ float PSNR(float* ori_data, float* dec_data, size_t nbEle){
 
 void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, float errorBound)
 {
+    
+    float* haarBlock = (float*)malloc(sizeof(float)*BLOCK_SIZE);
+
+
     // Varaibles used in decompression kernel
     int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + BLOCK_SIZE-1) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
@@ -63,7 +71,7 @@ void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, fl
 
     // Decompression kernel computation and time measurement.
     timerDEC_start = omp_get_wtime();
-    hawkZip_decompress_kernel(decData, cmpData, absQuant, fixedRate, threadOfs, nbEle, errorBound);
+    hawkZip_decompress_kernel(decData, cmpData, haarBlock, absQuant, fixedRate, threadOfs, nbEle, errorBound);
     timerDEC_end = omp_get_wtime();
     printf("hawkZip decompression throughput: %f GB/s\n", (nbEle*sizeof(float)/1024.0/1024.0/1024.0)/(timerDEC_end-timerDEC_start));
 
@@ -72,4 +80,5 @@ void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, fl
     free(absQuant);
     free(fixedRate);
     free(threadOfs);
+    free(haarBlock);
 }
