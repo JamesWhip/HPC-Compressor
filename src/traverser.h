@@ -1,12 +1,22 @@
 #include <math.h>
 
+#define threshold 5.0f
+
 int traverser(float* datablock, int blocks)
 {
+
+
+    //float max = 0.00f;
     float gradient = 0.00f;
     for(int i=0; i<blocks-1; i++)
     {
+        //float diff = fabs(datablock[i+1] - datablock[i]);
+        //max = diff > max ? diff : max;
         gradient += fabs(datablock[i+1] - datablock[i]);
     }
+
+
+    //return (max > threshold);
 
     //printf("Gradient: %.2e\n", gradient);
     // if(gradient >= 5e1) {
@@ -23,7 +33,7 @@ int traverser(float* datablock, int blocks)
     // }
 
 
-    if (gradient < 1e4) 
+    if (gradient < 1e2) 
     {
         return 0;
     } 

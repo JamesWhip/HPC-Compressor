@@ -17,7 +17,7 @@
 #define START_OFFSET 1 // 1 Char of padding at the start for the startFixedRate
 #define HAAR_ERROR 2
 
-void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, int* absQuant, unsigned int* signFlag, unsigned char* formatFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
+void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* haar_diff_start, int* startFixedRate, int* absQuant, unsigned int* signFlag, unsigned char* formatFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
@@ -41,6 +41,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
         unsigned int thread_ofs = 1; 
         int start_max_quant=0;
         int formatOffset = (block_num+7) / 8;
+        
+        int format_count = 0;
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
@@ -66,6 +68,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             
             int haar_counter = 0;
             if (format){
+                format_count++;
                 for(int j=block_start; j<block_end; j++)
                     haarBlock[haar_counter++] = oriData[j];
 
@@ -86,12 +89,24 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                 s = data_recip >= -0.5f ? 0 : 1;
                 curr_quant = (int)(data_recip + 0.5f) - s;
 
+                
 
                 if (j==block_start){
                     previous_quant = curr_quant;
                     quant_diff = 0;
+
                     relativeStart[curr_block] = abs(curr_quant);
 
+                    sign_ofs = j % BLOCK_SIZE;
+                    sign_flag |= (curr_quant < 0) << (BLOCK_SIZE-1 - sign_ofs);
+
+                    start_max_quant = start_max_quant > abs(curr_quant) ? start_max_quant : abs(curr_quant);
+                } else if(format && j-block_start == (int)(block_len / 2)){
+                    previous_quant = curr_quant;
+                    quant_diff = 0;
+
+                    haar_diff_start[curr_block] = abs(curr_quant);
+                    
                     sign_ofs = j % BLOCK_SIZE;
                     sign_flag |= (curr_quant < 0) << (BLOCK_SIZE-1 - sign_ofs);
 
@@ -102,7 +117,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                     sign_ofs = j % BLOCK_SIZE;
                     sign_flag |= (quant_diff < 0) << (BLOCK_SIZE-1 - sign_ofs);
                 }
-
 
                 // Get sign data.
                 // Get absolute quantization code.
@@ -133,7 +147,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
         int start_fixed_rate = (max==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max) + 1 + 8)/8;
         cmpData[0] = (unsigned char)start_fixed_rate;
         
-        threadOfs[thread_id] = thread_ofs + start_fixed_rate*block_num;
+        threadOfs[thread_id] = thread_ofs + start_fixed_rate*block_num + start_fixed_rate*format_count;
 
         for (int i = 0; i < formatOffset; i++){
             cmpData[i + START_OFFSET] = formatFlag[i];
@@ -159,6 +173,9 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = signFlag[curr_block];
             int relative_start = relativeStart[curr_block];
+            int haar_diff = haar_diff_start[curr_block];
+            
+            int format = (int)(0x01 & (formatFlag[(int)(curr_block/8)] >> (7 - curr_block%8)));
         
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
@@ -172,6 +189,13 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                 for (int j=0; j<start_fixed_rate; j++)
                 {
                     cmpData[cmp_byte_ofs++] = relative_start >> (j*8);
+                }
+
+                if (format){
+                    for (int j=0; j<start_fixed_rate; j++)
+                    {
+                        cmpData[cmp_byte_ofs++] = haar_diff >> (j*8);
+                    }
                 }
 
                 // Retrieve quant data for one block.
@@ -205,6 +229,9 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
                 for (int j=0; j<start_fixed_rate; j++)
                 {
                     cmpData[cmp_byte_ofs++] = relative_start >> (j*8);
+                }
+                if (format){
+                    cmp_byte_ofs += start_fixed_rate;
                 }
             }
         }
@@ -290,6 +317,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = 0;
             int relative_start = 0;
+            int haar_diff = 0;
             int sign_ofs;
             
             int block_len = block_end - block_start;
@@ -310,6 +338,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 for(int j=0; j < start_fixed_rate; j++)
                 {
                     relative_start |= cmpData[cmp_byte_ofs++] << (j*8);
+                }
+
+                if (format){
+                    for (int j=0; j<start_fixed_rate; j++)
+                    {
+                        haar_diff |= cmpData[cmp_byte_ofs++] << (j*8);
+                    }
                 }
 
                 unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
@@ -343,7 +378,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 int previous_quant = curr_quant0;
                 for(int i=block_start; i<block_end; i += 1) // Can unwrap by divisors of 32
                 {
-                    curr_quant0 = absQuant[i] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
+                    int num = absQuant[i];
+                    if (format && i-block_start == block_len/2){
+                        previous_quant = 0;
+                        num = haar_diff;
+                    }
+
+                    curr_quant0 = num * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
                     
                     decData[i] = (curr_quant0) * errorBound * 2 / ((format == 1) ? HAAR_ERROR : 1);
                     previous_quant = curr_quant0;
@@ -357,6 +398,9 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 for(int j=0; j < start_fixed_rate; j++)
                 {
                     relative_start |= cmpData[cmp_byte_ofs++] << (j*8);
+                }
+                if (format){
+                    cmp_byte_ofs += start_fixed_rate;
                 }
                 int relative_sign = (relative_start >> (start_fixed_rate*8-1)) ? -1 : 1;
 

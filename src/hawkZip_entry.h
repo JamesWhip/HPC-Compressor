@@ -14,6 +14,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + BLOCK_SIZE-1) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     int* relative_start = (int*)malloc(sizeof(int)*blockNum);
+    int* haar_diff_start = (int*)malloc(sizeof(int)*blockNum);
     unsigned int* signFlag = (unsigned int*)malloc(sizeof(unsigned int)*blockNum);
     unsigned char* formatFlag = (unsigned char*)malloc(sizeof(unsigned char)*blockNum);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
@@ -24,7 +25,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
 
     // Compression kernel computation and time measurement.
     timerCMP_start = omp_get_wtime();
-    hawkZip_compress_kernel(oriData, cmpData, relative_start, startFixedRate, absQuant, signFlag, formatFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
+    hawkZip_compress_kernel(oriData, cmpData, relative_start, haar_diff_start, startFixedRate, absQuant, signFlag, formatFlag, fixedRate, threadOfs, nbEle, cmpSize, errorBound);
     timerCMP_end = omp_get_wtime();
     printf("hawkZip   compression ratio:      %f\n", (float)(sizeof(float)*nbEle) / (float)(sizeof(unsigned char)*(*cmpSize)));
     printf("hawkZip   compression throughput: %f GB/s\n", (nbEle*sizeof(float)/1024.0/1024.0/1024.0)/(timerCMP_end-timerCMP_start));
@@ -39,6 +40,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
     free(relative_start);
     free(startFixedRate);
     free(formatFlag);
+    free(haar_diff_start);
 }
 
 float PSNR(float* ori_data, float* dec_data, size_t nbEle){

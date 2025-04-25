@@ -4,6 +4,8 @@
         "random": "c",
         "limits": "c",
         "algorithm": "c",
-        "arm_neon.h": "c"
+        "arm_neon.h": "c",
+        "stdlib.h": "c",
+        "cmath": "c"
     }
 }
