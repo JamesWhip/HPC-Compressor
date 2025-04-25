@@ -23,21 +23,9 @@ int traverser(float* datablock, int blocks)
     // }
 
 
-    if(gradient < 3e-4) 
+    if (gradient < 1e3) 
     {
-        return 3;
-    }
-    else if (gradient < 1.5e-3) 
-    {
-        return 3;
-    }
-    else if (gradient < 8e-3) 
-    {
-        return 2;
-
-    } else if (gradient < 1e5) 
-    {
-        return 1;
+        return 0;
     } 
-    return 4;
+    return 1;
 }

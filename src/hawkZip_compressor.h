@@ -12,11 +12,11 @@
     #include <arm_neon.h>   // NEON for ARM64
 #endif
 
-#define NUM_THREADS 5
+#define NUM_THREADS 1
 #define BLOCK_SIZE 32 // Cant change yet, not working, would need to change how signFlag is stored
 #define START_OFFSET 1 // 1 Char of padding at the start for the startFixedRate
 
-void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, float* haarBlock, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
+void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, int* absQuant, unsigned int* signFlag, unsigned char* formatFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
@@ -39,6 +39,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
         int sign_ofs;
         unsigned int thread_ofs = 1; 
         int start_max_quant=0;
+        int formatOffset = (block_num+7) / 8;
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
@@ -56,12 +57,31 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             int previous_quant = 0;
             int quant_diff = 0;
             
+            int block_len = block_end - block_start;
+            float haarBlock[block_len];
 
+            int format = traverser(oriData + block_start, block_len);
+            formatFlag[(int)(curr_block/8)] |= format << (7-i);    // 0 delta, 1 haar
+            
+            int haar_counter = 0;
+            if (format){
+                for(int j=block_start; j<block_end; j++)
+                    haarBlock[haar_counter++] = oriData[j];
+
+                haar_wavelet_transform(haarBlock, block_end - block_start, haarBlock);
+            }
+
+            haar_counter = 0;
             // Prequantization, get absolute value for each data.
             for(int j=block_start; j<block_end; j++)
             {
                 // Prequantization.
-                data_recip = oriData[j] * recip_precision;
+                if (format){
+                    data_recip = haarBlock[haar_counter++] * recip_precision;
+                } else {
+                    data_recip = oriData[j] * recip_precision;
+                }
+
                 s = data_recip >= -0.5f ? 0 : 1;
                 curr_quant = (int)(data_recip + 0.5f) - s;
 
@@ -93,7 +113,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             signFlag[curr_block] = sign_flag;
             temp_fixed_rate = max_quant==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max_quant);
             fixedRate[curr_block] = temp_fixed_rate;
-            cmpData[curr_block+START_OFFSET] = (unsigned char)temp_fixed_rate; // Save 1 char of space for startFixedRate
+            cmpData[curr_block+START_OFFSET+formatOffset] = (unsigned char)temp_fixed_rate; // Save 1 char of space for startFixedRate
 
             // Inner thread prefix-sum.
             thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;  // BLOCKSIZE of sign bits + fixed rate#of bits * num of ints) / 8 for bytes
@@ -114,6 +134,10 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
         
         threadOfs[thread_id] = thread_ofs + start_fixed_rate*block_num;
 
+        for (int i = 0; i < formatOffset; i++){
+            cmpData[i + START_OFFSET] = formatFlag[i];
+        }
+
         #pragma omp barrier
 
         // Exclusive prefix-sum.
@@ -122,7 +146,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             global_ofs += threadOfs[i];
         }
 
-        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET;
+        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET + formatOffset;
 
         // Fixed-length encoding and store data to compressed data.
         for(int i=0; i<block_num; i++)
@@ -196,13 +220,15 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
     }
 }
 
-void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* haarBlock, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
+void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
 {
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
     
     int start_fixed_rate = (int)cmpData[0];
+
+    char* formatFlag = cmpData + START_OFFSET; 
 
     // hawkZip parallel decompression begin.
     #pragma omp parallel
@@ -216,18 +242,18 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* ha
         int block_start, block_end;
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 1;
-
+        int formatOffset = (block_num+7) / 8;
 
         // Iterate all blocks in current thread.
         // Unwrap by 5, block size is 33750
         for(int i=start_block; i<block_num + start_block; i += 5)
         {
             // Retrieve fixed-rate for each block in the compressed data.
-            int temp_fixed_rate0 = (int)cmpData[i+START_OFFSET];
-            int temp_fixed_rate1 = (int)cmpData[i+1+START_OFFSET];
-            int temp_fixed_rate2 = (int)cmpData[i+2+START_OFFSET];
-            int temp_fixed_rate3 = (int)cmpData[i+3+START_OFFSET];
-            int temp_fixed_rate4 = (int)cmpData[i+4+START_OFFSET];
+            int temp_fixed_rate0 = (int)cmpData[i+START_OFFSET + formatOffset];
+            int temp_fixed_rate1 = (int)cmpData[i+1+START_OFFSET + formatOffset];
+            int temp_fixed_rate2 = (int)cmpData[i+2+START_OFFSET + formatOffset];
+            int temp_fixed_rate3 = (int)cmpData[i+3+START_OFFSET + formatOffset];
+            int temp_fixed_rate4 = (int)cmpData[i+4+START_OFFSET + formatOffset];
 
             fixedRate[i]   = temp_fixed_rate0;
             fixedRate[i+1] = temp_fixed_rate1;
@@ -251,7 +277,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* ha
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
-        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET;
+        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS + START_OFFSET + formatOffset;
 
         // Restore decompressed data.
         for(int i=0; i<block_num; i++)
@@ -264,6 +290,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* ha
             unsigned int sign_flag = 0;
             int relative_start = 0;
             int sign_ofs;
+            
+            int block_len = block_end - block_start;
+            float haarBlock[block_len];
+
+            int format = (int)(0x01 & (formatFlag[(int)(curr_block/8)] >> (7 - curr_block%8)));
 
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
@@ -312,8 +343,15 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* ha
                 for(int i=block_start; i<block_end; i += 1) // Can unwrap by divisors of 32
                 {
                     curr_quant0 = absQuant[i] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
+                    
+                    if (format)
+                        curr_quant0 /= 2;
                     decData[i] = (curr_quant0) * errorBound * 2;
                     previous_quant = curr_quant0;
+                }
+
+                if (format){
+                    haar_wavelet_inverse(decData + block_start, block_len);
                 }
 
             } else {
@@ -326,8 +364,14 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, float* ha
                 relative_start &= ~(1 << (start_fixed_rate*8-1));
                 
                 float const_num = relative_sign * relative_start * errorBound * 2;
+                if (format)
+                    const_num /= 2;
                 for(int i=block_start; i<block_end; i++){
                     decData[i] = const_num;
+                }
+
+                if (format){
+                    haar_wavelet_inverse(decData + block_start, block_len);
                 }
             }
         }
