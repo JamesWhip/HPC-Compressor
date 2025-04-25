@@ -15,6 +15,7 @@
 #define NUM_THREADS 1
 #define BLOCK_SIZE 32 // Cant change yet, not working, would need to change how signFlag is stored
 #define START_OFFSET 1 // 1 Char of padding at the start for the startFixedRate
+#define HAAR_ERROR 2
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relativeStart, int* startFixedRate, int* absQuant, unsigned int* signFlag, unsigned char* formatFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
@@ -61,7 +62,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             float haarBlock[block_len];
 
             int format = traverser(oriData + block_start, block_len);
-            formatFlag[(int)(curr_block/8)] |= format << (7-i);    // 0 delta, 1 haar
+            formatFlag[(int)(curr_block/8)] |= (format & 0x01) << (7-curr_block%8);    // 0 delta, 1 haar
             
             int haar_counter = 0;
             if (format){
@@ -77,7 +78,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             {
                 // Prequantization.
                 if (format){
-                    data_recip = haarBlock[haar_counter++] * recip_precision;
+                    data_recip = haarBlock[haar_counter++] * recip_precision * HAAR_ERROR;
                 } else {
                     data_recip = oriData[j] * recip_precision;
                 }
@@ -215,7 +216,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* relati
             for(int i=0; i<=thread_id; i++) {
                 cmpBlockInBytes += threadOfs[i];
             }
-            *cmpSize = (size_t)(cmpBlockInBytes + block_num * NUM_THREADS);
+            *cmpSize = (size_t)(cmpBlockInBytes + block_num * NUM_THREADS + START_OFFSET + formatOffset);
         }
     }
 }
@@ -344,13 +345,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 {
                     curr_quant0 = absQuant[i] * (sign_flag & (1 << (BLOCK_SIZE-1 - (i  )   % BLOCK_SIZE)) ? -1 : 1) + previous_quant;
                     
-                    if (format)
-                        curr_quant0 /= 2;
-                    decData[i] = (curr_quant0) * errorBound * 2;
+                    decData[i] = (curr_quant0) * errorBound * 2 / ((format == 1) ? HAAR_ERROR : 1);
                     previous_quant = curr_quant0;
                 }
 
-                if (format){
+                if (format == 1){
                     haar_wavelet_inverse(decData + block_start, block_len);
                 }
 
@@ -364,13 +363,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 relative_start &= ~(1 << (start_fixed_rate*8-1));
                 
                 float const_num = relative_sign * relative_start * errorBound * 2;
-                if (format)
-                    const_num /= 2;
+                if (format == 1)
+                    const_num /= HAAR_ERROR;
                 for(int i=block_start; i<block_end; i++){
                     decData[i] = const_num;
                 }
 
-                if (format){
+                if (format == 1){
                     haar_wavelet_inverse(decData + block_start, block_len);
                 }
             }

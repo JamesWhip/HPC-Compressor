@@ -23,7 +23,7 @@ int traverser(float* datablock, int blocks)
     // }
 
 
-    if (gradient < 1e3) 
+    if (gradient < 1e4) 
     {
         return 0;
     } 
